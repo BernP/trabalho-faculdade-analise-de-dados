@@ -1,154 +1,203 @@
 import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
 import seaborn as sns
 import numpy as np
-from scipy import stats
+import warnings
 
-# Configuração visual dos gráficos
+# Configurações visuais
 sns.set_theme(style="whitegrid")
-plt.rcParams['figure.figsize'] = (12, 6)
+plt.rcParams['figure.figsize'] = (16, 7)
+warnings.filterwarnings("ignore")
 
-def carregar_dados(db_path="../dada-scrapping/concursos_data.db"):
-    """Lê o SQLite e retorna um DataFrame Pandas"""
-    conn = sqlite3.connect(db_path)
+def carregar_dados(db_path):
+    try:
+        conn = sqlite3.connect(db_path)
+        query = """
+        SELECT 
+            c.nome AS concurso,
+            cg.nome_cargo AS cargo,
+            cg.tipo_prova,
+            g.resposta
+        FROM gabaritos g
+        JOIN cargos cg ON g.cargo_id = cg.id
+        JOIN concursos c ON cg.concurso_id = c.id
+        WHERE g.resposta != 'X' 
+        """
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        print(f"Erro ao conectar no banco: {e}")
+        return pd.DataFrame()
+
+def classificar_alternativas(df):
+    df_me = df[df['tipo_prova'] == 'MULTIPLA_ESCOLHA'].copy()
+    if df_me.empty:
+        df['qtd_alternativas'] = 0
+        return df
+
+    provas_com_e = df_me[df_me['resposta'] == 'E'][['concurso', 'cargo']].drop_duplicates()
+    provas_com_e['chave'] = provas_com_e['concurso'] + "_" + provas_com_e['cargo']
+    chaves_5_itens = set(provas_com_e['chave'])
     
-    query = """
-    SELECT 
-        c.nome AS concurso,
-        cg.nome_cargo AS cargo,
-        cg.tipo_prova,
-        g.resposta
-    FROM gabaritos g
-    JOIN cargos cg ON g.cargo_id = cg.id
-    JOIN concursos c ON cg.concurso_id = c.id
-    WHERE g.resposta != 'X'  -- Ignora anuladas para análise de balanceamento
-    """
-    
-    df = pd.read_sql_query(query, conn)
-    conn.close()
+    def verificar_qtd(row):
+        if row['tipo_prova'] != 'MULTIPLA_ESCOLHA': return 0
+        chave = row['concurso'] + "_" + row['cargo']
+        return 5 if chave in chaves_5_itens else 4
+
+    df['qtd_alternativas'] = df.apply(verificar_qtd, axis=1)
     return df
 
 def calcular_distribuicoes(df):
-    """Calcula a proporção de cada alternativa por prova (Cargo)"""
-    # Agrupa por Concurso e Cargo e conta as respostas
-    contagem = df.groupby(['concurso', 'cargo', 'tipo_prova'])['resposta'].value_counts(normalize=True).unstack(fill_value=0)
-    
-    # Transforma em porcentagem (0-100)
+    """Calcula a PORCENTAGEM de cada letra por prova"""
+    contagem = df.groupby(['concurso', 'cargo', 'tipo_prova', 'qtd_alternativas'])['resposta'].value_counts(normalize=True).unstack(fill_value=0)
     contagem = contagem * 100
     return contagem.reset_index()
 
-def analisar_estatisticas(series, nome_analise):
-    """Calcula Média, Mediana, Moda e Intervalos"""
-    media = series.mean()
-    mediana = series.median()
-    
-    # Moda (arredondamos para 1 casa decimal para encontrar a moda real em dados contínuos)
-    moda = series.round(1).mode()
-    moda_str = ", ".join([f"{m:.1f}%" for m in moda]) if not moda.empty else "N/A"
+def calcular_contagens_absolutas(df):
+    """Calcula a QUANTIDADE REAL (número inteiro) de cada letra por prova"""
+    contagem = df.groupby(['concurso', 'cargo', 'tipo_prova', 'qtd_alternativas'])['resposta'].value_counts(normalize=False).unstack(fill_value=0)
+    return contagem.reset_index()
 
-    # Intervalos (Quantis)
-    # 80% central = entre 10% e 90%
-    p10, p90 = series.quantile([0.10, 0.90])
-    # 90% central = entre 5% e 95%
-    p05, p95 = series.quantile([0.05, 0.95])
-    # 100% = Mínimo e Máximo
-    minimo, maximo = series.min(), series.max()
+def analisar_estatisticas(series_pct, series_qtd, nome_analise, equilibrio_teorico):
+    if series_pct.empty: return 0
+    
+    # Estatísticas de Tendência Central e Dispersão
+    media = series_pct.mean()
+    p10, p25, p50, p75, p90 = series_pct.quantile([0.10, 0.25, 0.50, 0.75, 0.90])
+    
+    # Total Absoluto
+    total_itens = series_qtd.sum() if not series_qtd.empty else 0
+    
+    print(f"\n--- {nome_analise} ---")
+    print(f"Total de Questões Analisadas: {int(total_itens)}")
+    print(f"Média Real: {media:.2f}% (Teórico: {equilibrio_teorico}%)")
+    print(f"Quartis: 1º(25%): {p25:.2f}% | Mediana(50%): {p50:.2f}% | 3º(75%): {p75:.2f}%")
+    print(f"Intervalo 80% (P10-P90): {p10:.2f}% a {p90:.2f}%")
+    
+    return media
 
-    print(f"\n--- Estatísticas: {nome_analise} ---")
-    print(f"Média:   {media:.2f}%")
-    print(f"Mediana: {mediana:.2f}%")
-    print(f"Moda (~): {moda_str}")
-    print(f"Intervalo 80% (maioria): {p10:.2f}% a {p90:.2f}%")
-    print(f"Intervalo 90% (amplo):   {p05:.2f}% a {p95:.2f}%")
-    print(f"Amplitude Total (100%):  {minimo:.2f}% a {maximo:.2f}%")
-    
-    return media  # Retorna média para plotar linha no gráfico
+def plotar_certo_errado(df_ce_pct, df_ce_qtd):
+    colunas_disponiveis = [col for col in ['C', 'E'] if col in df_ce_pct.columns]
+    if not colunas_disponiveis: return
 
-def plotar_certo_errado(df_ce):
-    """
-    Gráfico 1: Distribuição da razão Certo/Errado
-    Focaremos na porcentagem de 'C' (Certo). Se for 50%, está equilibrado.
-    """
-    if 'C' not in df_ce.columns:
-        print("Dados insuficientes para análise Certo/Errado.")
-        return
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+    if len(colunas_disponiveis) == 1: axes = [axes]
+    
+    print("\n=== ESTATÍSTICAS: CERTO vs ERRADO ===")
 
-    plt.figure()
-    sns.histplot(df_ce['C'], kde=True, bins=20, color='green')
-    
-    media = analisar_estatisticas(df_ce['C'], "Proporção de 'Certo' em provas C/E")
-    
-    plt.axvline(media, color='red', linestyle='--', label=f'Média: {media:.1f}%')
-    plt.axvline(50, color='blue', linestyle=':', label='Equilíbrio Perfeito (50%)')
-    
-    plt.title('Distribuição da Porcentagem de Itens "CERTO" por Prova')
-    plt.xlabel('Porcentagem de Gabaritos "C"')
-    plt.ylabel('Frequência (Quantidade de Provas)')
-    plt.legend()
+    configs = {
+        'C': {'cor': 'green', 'titulo': 'CERTO (C)'},
+        'E': {'cor': '#d62728', 'titulo': 'ERRADO (E)'}
+    }
+
+    for i, letra in enumerate(colunas_disponiveis):
+        ax = axes[i]
+        dados_pct = df_ce_pct[letra]
+        dados_qtd = df_ce_qtd[letra] if letra in df_ce_qtd.columns else pd.Series()
+        
+        config = configs[letra]
+        
+        # Histograma
+        sns.histplot(dados_pct, kde=True, bins=20, color=config['cor'], stat="density", ax=ax)
+        
+        media = analisar_estatisticas(dados_pct, dados_qtd, f"Gabarito {letra}", 50)
+        
+        # Linhas Verticais
+        ax.axvline(media, color='black', linestyle='--', linewidth=2, label=f'Média Real: {media:.1f}%')
+        ax.axvline(50, color='blue', linestyle='-', linewidth=2.5, label='Teórico (50%)')
+        
+        # Ajuste Visual
+        ax.xaxis.set_major_locator(plt.MultipleLocator(5))
+        ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=100))
+        ax.set_xlim(35, 65)
+        
+        ax.set_title(f'Distribuição - {config["titulo"]}', fontsize=14)
+        ax.set_xlabel(f'% de itens {letra}')
+        if i == 0: ax.set_ylabel('Densidade')
+        ax.legend(loc='upper right')
+
+    plt.suptitle('Balanceamento Cebraspe: CERTO vs ERRADO', fontsize=16)
     plt.tight_layout()
     plt.show()
 
-def plotar_multipla_escolha(df_me):
-    """
-    5 Gráficos: Distribuição de A, B, C, D, E
-    """
-    alternativas = ['A', 'B', 'C', 'D', 'E']
-    colunas_presentes = [letra for letra in alternativas if letra in df_me.columns]
-    
-    if not colunas_presentes:
-        print("Nenhuma prova de Múltipla Escolha encontrada.")
-        return
+def plotar_multipla_escolha(df_me_pct, df_me_qtd, n_alternativas):
+    if n_alternativas == 5:
+        letras = ['A', 'B', 'C', 'D', 'E']
+        equilibrio = 20.0
+        titulo = "Provas de 5 Alternativas (A-E)"
+        limite_min, limite_max = 5, 35 
+    else:
+        letras = ['A', 'B', 'C', 'D']
+        equilibrio = 25.0
+        titulo = "Provas de 4 Alternativas (A-D)"
+        limite_min, limite_max = 10, 40 
 
-    # Cria uma figura com 5 subplots (ou menos se não tiver todas as letras)
-    fig, axes = plt.subplots(1, len(colunas_presentes), figsize=(20, 5), sharey=True)
-    
-    if len(colunas_presentes) == 1: axes = [axes] # Garante que seja lista se só tiver 1
+    letras_presentes = [l for l in letras if l in df_me_pct.columns]
+    if not letras_presentes: return
 
-    for i, letra in enumerate(colunas_presentes):
+    fig, axes = plt.subplots(1, len(letras_presentes), figsize=(3 * len(letras_presentes), 6), sharey=True)
+    if len(letras_presentes) == 1: axes = [axes]
+
+    print(f"\n=== ESTATÍSTICAS: {titulo} ===")
+
+    for i, letra in enumerate(letras_presentes):
         ax = axes[i]
-        dados = df_me[letra]
+        dados_pct = df_me_pct[letra]
+        dados_qtd = df_me_qtd[letra] if letra in df_me_qtd.columns else pd.Series()
         
-        # Histograma
-        sns.histplot(dados, kde=True, ax=ax, color=sns.color_palette("husl", 5)[i])
+        sns.histplot(dados_pct, kde=True, ax=ax, color=sns.color_palette("husl", 5)[i], stat="density")
+        media = analisar_estatisticas(dados_pct, dados_qtd, f"Letra {letra}", equilibrio)
         
-        # Estatísticas no Console
-        media = analisar_estatisticas(dados, f"Alternativa {letra} (Múltipla Escolha)")
+        ax.axvline(media, color='black', linestyle='--', linewidth=1.5, label=f'Real: {media:.1f}%')
+        ax.axvline(equilibrio, color='blue', linestyle='-', linewidth=2, label=f'Teórico ({equilibrio:.0f}%)')
         
-        # Linhas de referência no gráfico
-        ax.axvline(media, color='black', linestyle='--', label=f'Média: {media:.1f}%')
-        ax.axvline(20, color='gray', linestyle=':', label='Teórico (20%)') # Em 5 alternativas, 20% é o equilíbrio
+        ax.xaxis.set_major_locator(plt.MultipleLocator(5))
+        ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=100))
+        ax.set_xlim(limite_min, limite_max)
         
-        ax.set_title(f'Distribuição da Letra {letra}')
-        ax.set_xlabel(f'% de {letra} na prova')
-        if i == 0: ax.set_ylabel('Frequência')
-        ax.legend()
+        ax.set_title(f'Letra {letra}', fontsize=12)
+        ax.set_xlabel('% na prova')
+        if i == 0: ax.set_ylabel('Densidade')
+        ax.legend(fontsize='small')
 
-    plt.suptitle('Análise de Balanceamento de Alternativas (Múltipla Escolha)', fontsize=16)
+    plt.suptitle(f'Distribuição de Gabaritos - {titulo}', fontsize=16)
     plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
-    print("Carregando dados do banco...")
-    df_bruto = carregar_dados()
+    # AJUSTE O CAMINHO AQUI
+    CAMINHO_DB = "../dada-scrapping/concursos_data.db"
     
-    if df_bruto.empty:
-        print("O banco de dados está vazio ou sem gabaritos válidos.")
+    print(f"Lendo banco de dados em: {CAMINHO_DB}...")
+    df_bruto = carregar_dados(CAMINHO_DB)
+    
+    if not df_bruto.empty:
+        print("Classificando tipos de prova...")
+        df_classificado = classificar_alternativas(df_bruto)
+        
+        # Calcula Percentagens
+        df_dist = calcular_distribuicoes(df_classificado)
+        # Calcula Quantidades Absolutas
+        df_counts = calcular_contagens_absolutas(df_classificado)
+        
+        # Filtros de Percentagem
+        df_ce = df_dist[df_dist['tipo_prova'] == 'CERTO_ERRADO']
+        df_me_5 = df_dist[(df_dist['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_dist['qtd_alternativas'] == 5)]
+        df_me_4 = df_dist[(df_dist['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_dist['qtd_alternativas'] == 4)]
+        
+        # Filtros de Quantidade
+        df_counts_ce = df_counts[df_counts['tipo_prova'] == 'CERTO_ERRADO']
+        df_counts_me_5 = df_counts[(df_counts['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_counts['qtd_alternativas'] == 5)]
+        df_counts_me_4 = df_counts[(df_counts['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_counts['qtd_alternativas'] == 4)]
+        
+        if not df_ce.empty: 
+            plotar_certo_errado(df_ce, df_counts_ce)
+        if not df_me_5.empty: 
+            plotar_multipla_escolha(df_me_5, df_counts_me_5, 5)
+        if not df_me_4.empty: 
+            plotar_multipla_escolha(df_me_4, df_counts_me_4, 4)
     else:
-        # Calcula as % de cada prova
-        df_distribuicao = calcular_distribuicoes(df_bruto)
-        
-        # Separa os dataframes por tipo
-        df_ce = df_distribuicao[df_distribuicao['tipo_prova'] == 'CERTO_ERRADO']
-        df_me = df_distribuicao[df_distribuicao['tipo_prova'] == 'MULTIPLA_ESCOLHA']
-
-        print(f"\nProvas Certo/Errado analisadas: {len(df_ce)}")
-        print(f"Provas Múltipla Escolha analisadas: {len(df_me)}")
-
-        # 1. Análise Certo/Errado
-        if not df_ce.empty:
-            plotar_certo_errado(df_ce)
-        
-        # 2. Análise Múltipla Escolha
-        if not df_me.empty:
-            plotar_multipla_escolha(df_me)
+        print("Nenhum dado encontrado.")
