@@ -5,6 +5,9 @@ import matplotlib.ticker as mtick
 import seaborn as sns
 import numpy as np
 import warnings
+from statsmodels.stats.proportion import proportions_ztest
+from scipy.stats import chisquare
+from scipy.stats import ttest_1samp
 
 # Configurações visuais
 sns.set_theme(style="whitegrid")
@@ -167,6 +170,85 @@ def plotar_multipla_escolha(df_me_pct, df_me_qtd, n_alternativas):
     plt.tight_layout()
     plt.show()
 
+def executar_teste_z_balanceamento(df):
+    """
+    Testa se a proporção de CERTO é estatisticamente igual a 50%.
+    """
+    # Filtra apenas questões Certo/Errado
+    df_ce = df[df['tipo_prova'] == 'CERTO_ERRADO']
+    
+    # Contagem de sucessos (Certo) e total de observações (n)
+    n_sucessos = df_ce[df_ce['resposta'] == 'C'].shape[0]
+    n_total = df_ce.shape[0]
+    
+    # Executa o teste bilateral (two-sided) comparando com 0.5
+    stat, p_valor = proportions_ztest(count=n_sucessos, nobs=n_total, value=0.5)
+    
+    print(f"--- Teste 1: Z-Test para Proporção (Certo/Errado) ---")
+    print(f"Proporção Observada: {(n_sucessos/n_total)*100:.2f}%")
+    print(f"Estatística Z: {stat:.4f}")
+    print(f"P-valor: {p_valor:.4e}")
+    
+    if p_valor < 0.05:
+        print(">> Conclusão: Rejeita-se H0. O desvio de 50% NÃO é aleatório (há viés).")
+    else:
+        print(">> Conclusão: Aceita-se H0. O desvio é estatisticamente irrelevante.")
+
+def executar_teste_qui_quadrado(df):
+    """
+    Verifica se a distribuição das 5 alternativas foge do padrão uniforme (20% cada).
+    """
+    # Filtra dados de 5 alternativas
+    df_5 = df[(df['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df['qtd_alternativas'] == 5)]
+    
+    # Contagem observada
+    contagem = df_5['resposta'].value_counts().sort_index()
+    observado = contagem.values
+    
+    # Cálculo das esperadas (distribuição uniforme)
+    total_questoes = observado.sum()
+    esperado = [total_questoes / 5] * 5
+    
+    stat, p_valor = chisquare(f_obs=observado, f_exp=esperado)
+    
+    print(f"\n--- Teste 2: Qui-Quadrado (Distribuição Global A-E) ---")
+    print(f"Qui-Quadrado: {stat:.4f}")
+    print(f"P-valor: {p_valor:.4e}")
+    
+    if p_valor < 0.05:
+        print(">> Conclusão: A distribuição global NÃO é uniforme. Há preferência por certas letras.")
+    else:
+        print(">> Conclusão: A distribuição segue o padrão uniforme esperado.")
+
+def executar_teste_t_letra_a(df):
+    """
+    Testa se a média da Letra A é significativamente menor que 20%.
+    """
+    # 1. Prepara os dados: Calcula % de A para cada prova individualmente
+    df_5 = df[(df['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df['qtd_alternativas'] == 5)]
+    
+    # Agrupa por prova e calcula %
+    distribuicao_por_prova = df_5.groupby(['concurso', 'cargo'])['resposta'] \
+                                 .value_counts(normalize=True).unstack(fill_value=0) * 100
+    
+    # Pega apenas a coluna 'A'
+    amostra_a = distribuicao_por_prova['A']
+    
+    # 2. Executa o teste T (comparando com a média populacional 20)
+    # alternative='less' verifica se é MENOR que 20
+    stat, p_valor = ttest_1samp(amostra_a, popmean=20.0, alternative='less')
+    
+    print(f"\n--- Teste 3: Teste T (Viés Negativo da Letra A) ---")
+    print(f"Média das Provas: {amostra_a.mean():.2f}%")
+    print(f"Estatística T: {stat:.4f}")
+    print(f"P-valor: {p_valor:.4e}")
+    
+    if p_valor < 0.05:
+        print(">> Conclusão: Há evidência estatística de que a banca sub-representa a letra A.")
+    else:
+        print(">> Conclusão: A média baixa da letra A está dentro da margem de erro normal.")
+
+
 if __name__ == "__main__":
     # AJUSTE O CAMINHO AQUI
     CAMINHO_DB = "../dada-scrapping/concursos_data.db"
@@ -193,6 +275,12 @@ if __name__ == "__main__":
         df_counts_me_5 = df_counts[(df_counts['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_counts['qtd_alternativas'] == 5)]
         df_counts_me_4 = df_counts[(df_counts['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_counts['qtd_alternativas'] == 4)]
         
+
+        #Testes de hipótese
+        executar_teste_z_balanceamento(df_classificado)
+        executar_teste_qui_quadrado(df_classificado)
+        executar_teste_t_letra_a(df_classificado)
+
         if not df_ce.empty: 
             plotar_certo_errado(df_ce, df_counts_ce)
         if not df_me_5.empty: 
