@@ -247,6 +247,204 @@ def executar_teste_t_letra_a(df):
         print(">> Conclusão: Há evidência estatística de que a banca sub-representa a letra A.")
     else:
         print(">> Conclusão: A média baixa da letra A está dentro da margem de erro normal.")
+def print_header(titulo):
+    print("\n" + "="*70)
+    print(f"{titulo.center(70)}")
+    print("="*70)
+
+def relatorio_z_test_detalhado(df):
+    print_header("RELATÓRIO 1: TESTE Z (BALANCEAMENTO CERTO/ERRADO)")
+    
+    # 1. Preparação dos Dados
+    df_ce = df[df['tipo_prova'] == 'CERTO_ERRADO']
+    n_sucessos = df_ce[df_ce['resposta'] == 'C'].shape[0]
+    n_total = df_ce.shape[0]
+    prop_real = n_sucessos / n_total
+    prop_teorica = 0.5
+    
+    print("PASSO 1: DEFINIÇÃO DAS HIPÓTESES")
+    print("   H0 (Nula): A banca é justa. A proporção de 'Certo' é exatamente 50% (0.5).")
+    print("   H1 (Alternativa): A banca tem viés. A proporção é diferente de 50%.")
+    
+    print("\nPASSO 2: COLETA DE DADOS")
+    print(f"   Total de Questões (n): {n_total}")
+    print(f"   Quantidade de 'Certo' (x): {n_sucessos}")
+    print(f"   Proporção Observada (p̂): {prop_real:.4f} ({prop_real*100:.2f}%)")
+    
+    # 2. Execução do Teste
+    stat, p_valor = proportions_ztest(count=n_sucessos, nobs=n_total, value=prop_teorica)
+    
+    print("\nPASSO 3: CÁLCULO ESTATÍSTICO (TESTE Z)")
+    print(f"   Diferença encontrada: {(prop_real - prop_teorica)*100:.2f} pontos percentuais")
+    print(f"   Z-Score calculado: {stat:.4f}")
+    print("   (O Z-Score mede quantos 'desvios' estamos longe da média ideal de 0)")
+
+    print("\nPASSO 4: INTERPRETAÇÃO DO P-VALOR")
+    print(f"   P-valor: {p_valor:.4f} ({p_valor*100:.2f}%)")
+    print("   Significado: É a chance de um resultado desse acontecer por pura sorte.")
+    
+    print("\nPASSO 5: VEREDITO FINAL")
+    if p_valor < 0.05:
+        print("   [!] REJEITA-SE H0.")
+        print("   Conclusão: O desvio é estatisticamente significativo. A banca não é perfeitamente 50/50.")
+    else:
+        print("   [OK] ACEITA-SE H0.")
+        print("   Conclusão: O desvio é estatisticamente irrelevante. Pode ser considerado aleatório.")
+
+
+def relatorio_chi2_detalhado(df):
+    print_header("RELATÓRIO 2: QUI-QUADRADO (DISTRIBUIÇÃO A-E)")
+    
+    # 1. Preparação
+    df_5 = df[(df['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df['qtd_alternativas'] == 5)]
+    contagem = df_5['resposta'].value_counts().sort_index()
+    observado = contagem.values
+    letras = contagem.index.tolist()
+    
+    if len(observado) != 5:
+        print("Erro: Dados insuficientes para análise completa das 5 letras.")
+        return
+
+    total = observado.sum()
+    esperado_por_letra = total / 5
+    esperado = [esperado_por_letra] * 5
+    
+    print("PASSO 1: DEFINIÇÃO DAS HIPÓTESES")
+    print("   H0: A distribuição é Uniforme (todas as letras têm a mesma chance).")
+    print("   H1: A distribuição é Viciada (algumas letras aparecem mais que outras).")
+    
+    print("\nPASSO 2: COMPARATIVO OBSERVADO vs ESPERADO")
+    print(f"   Total de questões: {total}. Esperado por letra: {esperado_por_letra:.1f}")
+    print(f"   {'Letra':<5} | {'Real':<10} | {'Ideal':<10} | {'Diferença':<10}")
+    print("   " + "-"*45)
+    
+    soma_erro_quadratico = 0
+    for i in range(5):
+        diff = observado[i] - esperado[i]
+        erro_q = (diff ** 2) / esperado[i]
+        soma_erro_quadratico += erro_q
+        print(f"   {letras[i]:<5} | {observado[i]:<10} | {esperado[i]:<10.1f} | {diff:<+10.1f}")
+
+    # 2. Execução
+    stat, p_valor = chisquare(f_obs=observado)
+    
+    print("\nPASSO 3: CÁLCULO ESTATÍSTICO (QUI-QUADRADO)")
+    print(f"   Chi2 Calculado (Soma dos erros normalizados): {stat:.4f}")
+    print(f"   (Valor crítico para 5 alternativas é aprox 9.48. O seu deu {stat:.2f})")
+
+    print("\nPASSO 4: VEREDITO FINAL")
+    print(f"   P-valor: {p_valor:.8f}")
+    
+    if p_valor < 0.05:
+        print("   [!] REJEITA-SE H0.")
+        print("   Conclusão: A distribuição NÃO é uniforme. Há um padrão de preferência claro.")
+    else:
+        print("   [OK] ACEITA-SE H0.")
+        print("   Conclusão: As diferenças são pequenas o suficiente para serem sorte.")
+
+
+def relatorio_t_test_detalhado(df):
+    print_header("RELATÓRIO 3: TESTE T (VIÉS DA LETRA A)")
+    
+    # 1. Preparação: Calcular % de A por prova
+    df_5 = df[(df['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df['qtd_alternativas'] == 5)]
+    distribuicao = df_5.groupby(['concurso', 'cargo'])['resposta'].value_counts(normalize=True).unstack(fill_value=0) * 100
+    
+    if 'A' not in distribuicao.columns: return
+    amostra_a = distribuicao['A']
+    
+    media_obs = amostra_a.mean()
+    media_teorica = 20.0
+    desvio_padrao = amostra_a.std()
+    n_provas = len(amostra_a)
+    
+    print("PASSO 1: DEFINIÇÃO DAS HIPÓTESES")
+    print("   H0: A média da Letra A nas provas é igual a 20%.")
+    print("   H1: A média da Letra A é significativamente MENOR que 20%.")
+    
+    print("\nPASSO 2: ANÁLISE DESCRITIVA DAS PROVAS")
+    print(f"   Número de provas analisadas: {n_provas}")
+    print(f"   Média observada da Letra A: {media_obs:.2f}%")
+    print(f"   Desvio Padrão (Variação entre provas): {desvio_padrao:.2f}")
+    print(f"   Diferença para o ideal: {media_obs - media_teorica:.2f}%")
+    
+    # 2. Execução
+    stat, p_valor = ttest_1samp(amostra_a, popmean=media_teorica, alternative='less')
+    
+    print("\nPASSO 3: CÁLCULO ESTATÍSTICO (TESTE T)")
+    print(f"   Estatística T: {stat:.4f}")
+    print("   (Indica quantos desvios-padrão a sua média está abaixo do esperado)")
+    
+    print("\nPASSO 4: VEREDITO FINAL")
+    print(f"   P-valor: {p_valor:.8f}")
+    
+    if p_valor < 0.05:
+        print("   [!] REJEITA-SE H0.")
+        print("   Conclusão: Existe evidência estatística robusta de que a banca EVITA a letra A.")
+        print("   Dica Prática: Em chute cego, evite a letra A.")
+    else:
+        print("   [OK] ACEITA-SE H0.")
+        print("   Conclusão: A letra A aparece dentro da normalidade.")
+
+def plotar_boxplots_comparativos(df_dist):
+    """
+    Gera Boxplots para comparar a distribuição de todas as letras lado a lado.
+    Permite ver claramente qual letra tem a mediana maior ou menor.
+    """
+    print_header("GERANDO GRÁFICOS DE QUARTIS (BOXPLOTS)")
+
+    # 1. Boxplot para Certo/Errado
+    df_ce = df_dist[df_dist['tipo_prova'] == 'CERTO_ERRADO']
+    if not df_ce.empty:
+        # Transforma de colunas (C, E) para linhas (Letra, Valor)
+        melted_ce = df_ce.melt(id_vars=['concurso', 'cargo'], value_vars=['C', 'E'], 
+                               var_name='Gabarito', value_name='Porcentagem')
+        melted_ce = melted_ce.dropna()
+
+        plt.figure(figsize=(10, 6))
+        sns.boxplot(x='Gabarito', y='Porcentagem', data=melted_ce, palette=['green', '#d62728'])
+        
+        # Linha de referência 50%
+        plt.axhline(50, color='blue', linestyle='--', linewidth=2, label='Equilíbrio (50%)')
+        plt.title('Boxplot: Distribuição de Itens Certo vs Errado', fontsize=14)
+        plt.ylabel('Porcentagem na Prova')
+        plt.legend()
+        plt.show()
+
+    # 2. Boxplot para Múltipla Escolha (5 Alternativas)
+    df_me5 = df_dist[(df_dist['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_dist['qtd_alternativas'] == 5)]
+    if not df_me5.empty:
+        cols = [l for l in ['A','B','C','D','E'] if l in df_me5.columns]
+        melted_me5 = df_me5.melt(id_vars=['concurso'], value_vars=cols, 
+                                 var_name='Letra', value_name='Porcentagem')
+        melted_me5 = melted_me5.dropna()
+
+        plt.figure(figsize=(12, 6))
+        sns.boxplot(x='Letra', y='Porcentagem', data=melted_me5, palette="husl")
+        
+        # Linha de referência 20%
+        plt.axhline(20, color='blue', linestyle='--', linewidth=2, label='Teórico (20%)')
+        plt.title('Boxplot: Comparativo de Alternativas (Provas de 5 Itens)', fontsize=14)
+        plt.ylabel('Porcentagem na Prova')
+        plt.legend()
+        plt.show()
+
+    # 3. Boxplot para Múltipla Escolha (4 Alternativas)
+    df_me4 = df_dist[(df_dist['tipo_prova'] == 'MULTIPLA_ESCOLHA') & (df_dist['qtd_alternativas'] == 4)]
+    if not df_me4.empty:
+        cols = [l for l in ['A','B','C','D'] if l in df_me4.columns]
+        melted_me4 = df_me4.melt(id_vars=['concurso'], value_vars=cols, 
+                                 var_name='Letra', value_name='Porcentagem')
+        melted_me4 = melted_me4.dropna()
+
+        plt.figure(figsize=(12, 6))
+        sns.boxplot(x='Letra', y='Porcentagem', data=melted_me4, palette="husl")
+        
+        plt.axhline(25, color='blue', linestyle='--', linewidth=2, label='Teórico (25%)')
+        plt.title('Boxplot: Comparativo de Alternativas (Provas de 4 Itens)', fontsize=14)
+        plt.ylabel('Porcentagem na Prova')
+        plt.legend()
+        plt.show()
 
 
 if __name__ == "__main__":
@@ -277,9 +475,9 @@ if __name__ == "__main__":
         
 
         #Testes de hipótese
-        executar_teste_z_balanceamento(df_classificado)
-        executar_teste_qui_quadrado(df_classificado)
-        executar_teste_t_letra_a(df_classificado)
+        relatorio_z_test_detalhado(df_classificado)
+        relatorio_chi2_detalhado(df_classificado)
+        relatorio_t_test_detalhado(df_classificado)
 
         if not df_ce.empty: 
             plotar_certo_errado(df_ce, df_counts_ce)
@@ -287,5 +485,8 @@ if __name__ == "__main__":
             plotar_multipla_escolha(df_me_5, df_counts_me_5, 5)
         if not df_me_4.empty: 
             plotar_multipla_escolha(df_me_4, df_counts_me_4, 4)
+
+        # 2. NOVO: Gráficos de Boxplot (Quartis)
+        plotar_boxplots_comparativos(df_dist)
     else:
         print("Nenhum dado encontrado.")
