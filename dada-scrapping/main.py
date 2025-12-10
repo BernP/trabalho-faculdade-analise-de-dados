@@ -36,8 +36,6 @@ if __name__ == "__main__":
     print("   ROBÔ DE GABARITOS CEBRASPE - VERSÃO FINAL      ")
     print("==================================================\n")
 
-    # 1. Limpeza Inicial
-    resetar_banco_dados(ARQUIVO_BANCO)
     
     crawler = CebraspeCrawler()
     processor = PDFProcessor()
